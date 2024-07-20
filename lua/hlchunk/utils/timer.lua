@@ -37,17 +37,56 @@ function M.setInterval(fn, interval, ...)
     return timer
 end
 
+---debounce funciton, assume we call a debounced func every 300ms for 3 times, and delay set to 1000ms
+---then will actually call 1 times, and timeline as follow:
+---0ms 300ms `600ms`  call debounced func, 600ms will tigger the timer, other 2 will be ignored
+---and notice that the actually executed function's args will be the last call's args
 ---@param fn function
 ---@param delay integer The delay in milliseconds
+---@param first? boolean Whether to call the function immediately
 ---@return function
-function M.debounce(fn, delay)
+function M.debounce(fn, delay, first)
     ---@type uv_timer_t | nil
     local timer = nil
+    local scheduled = false
+    first = first or false
     return function(...)
+        local args = { ... }
+        if first and not scheduled then
+            scheduled = true
+            fn(...)
+        end
         if timer then
             timer:stop()
         end
-        timer = M.setTimeout(fn, delay, ...)
+        timer = M.setTimeout(function()
+            scheduled = false
+            fn(unpack(args))
+        end, delay)
+    end
+end
+
+function M.debounce_throttle(fn, delay)
+    local timer = nil
+    local called = false
+
+    return function(...)
+        local args = { ... }
+        if timer then
+            timer:stop()
+        end
+
+        if not called then
+            fn(unpack(args))
+            called = true
+            M.setTimeout(function()
+                called = false
+            end, delay)
+        else
+            timer = M.setTimeout(function()
+                fn(unpack(args))
+            end, delay)
+        end
     end
 end
 
