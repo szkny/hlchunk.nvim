@@ -3,10 +3,9 @@ local ChunkConf = require("hlchunk.mods.chunk.chunk_conf")
 local chunkHelper = require("hlchunk.utils.chunkHelper")
 local LoopTask = require("hlchunk.utils.loopTask")
 local debounce = require("hlchunk.utils.timer").debounce
-local debounce_throttle = require("hlchunk.utils.timer").debounce_throttle
 local Pos = require("hlchunk.utils.position")
 local Scope = require("hlchunk.utils.scope")
-local cFunc = require("hlchunk.utils.cFunc")
+local indentHelper = require("hlchunk.utils.indentHelper")
 
 local class = require("hlchunk.utils.class")
 
@@ -47,7 +46,7 @@ end
 ---@class ChunkMod : BaseMod
 ---@field conf ChunkConf
 ---@field meta ChunkMetaInfo
----@field render fun(self: ChunkMod, range: Scope, opts?: {error: boolean, lazy: boolean})
+---@field render fun(self: ChunkMod, range: Scope, opts?: {error: boolean})
 ---@overload fun(conf?: UserChunkConf, meta?: MetaInfo): ChunkMod
 local ChunkMod = class(BaseMod, constructor)
 
@@ -55,7 +54,6 @@ local ChunkMod = class(BaseMod, constructor)
 function ChunkMod:enable()
     BaseMod.enable(self)
     self:extra()
-    self:render(Scope(0, 0, -1))
 end
 
 function ChunkMod:stopRender()
@@ -73,8 +71,8 @@ function ChunkMod:updatePreState(virt_text_list, row_list, virt_text_win_col_lis
 end
 
 function ChunkMod:get_chunk_data(range, virt_text_list, row_list, virt_text_win_col_list)
-    local beg_blank_len = cFunc.get_indent(range.bufnr, range.start)
-    local end_blank_len = cFunc.get_indent(range.bufnr, range.finish)
+    local beg_blank_len = indentHelper.get_indent(range.bufnr, range.start)
+    local end_blank_len = indentHelper.get_indent(range.bufnr, range.finish)
     local start_col = math.max(math.min(beg_blank_len, end_blank_len) - self.meta.shiftwidth, 0)
 
     if beg_blank_len > 0 then
@@ -100,7 +98,7 @@ function ChunkMod:get_chunk_data(range, virt_text_list, row_list, virt_text_win_
         chars = utf8Split(mid)
         -- when use click `<<` or `>>` to indent, we should make sure the line would not encounter the indent char
         for i = 1, mid_char_nums do
-            local char = Pos.get_char_at_pos(Pos(range.bufnr, range.start + i, start_col), self.meta.shiftwidth)
+            local char = Pos.get_char_at_pos(Pos(range.bufnr, range.start + i, start_col))
             if not char:match("%s") and #char ~= 0 then
                 chars[i] = ""
             end
@@ -122,7 +120,7 @@ function ChunkMod:get_chunk_data(range, virt_text_list, row_list, virt_text_win_
 end
 
 function ChunkMod:render(range, opts)
-    opts = opts or { error = false, lazy = false }
+    opts = opts or { error = false }
     if not self:shouldRender(range.bufnr) then
         return
     end
@@ -133,8 +131,7 @@ function ChunkMod:render(range, opts)
     self:get_chunk_data(range, virt_text_list, row_list, virt_text_win_col_list)
 
     if
-        opts.lazy
-        and shallowCmp(virt_text_list, self.meta.pre_virt_text_list)
+        shallowCmp(virt_text_list, self.meta.pre_virt_text_list)
         and shallowCmp(row_list, self.meta.pre_row_list)
         and shallowCmp(virt_text_win_col_list, self.meta.pre_virt_text_win_col_list)
         and self.meta.pre_is_error == opts.error
@@ -152,14 +149,11 @@ function ChunkMod:render(range, opts)
         priority = 100,
     }
     local text_hl = opts.error and "HLChunk2" or "HLChunk1"
-    if self.conf.delay == 0 or opts.lazy == false then
+    if self.conf.delay == 0 then
         for i, vt in ipairs(virt_text_list) do
             row_opts.virt_text = { { vt, text_hl } }
             row_opts.virt_text_win_col = virt_text_win_col_list[i]
-            local row = row_list[i]
-            if row and api.nvim_buf_is_valid(range.bufnr) and api.nvim_buf_line_count(range.bufnr) > row then
-                api.nvim_buf_set_extmark(range.bufnr, self.meta.ns_id, row, 0, row_opts)
-            end
+            api.nvim_buf_set_extmark(range.bufnr, self.meta.ns_id, row_list[i], 0, row_opts)
         end
     else
         self.meta.task = LoopTask(function(vt, row, vt_win_col)
@@ -177,11 +171,8 @@ end
 
 function ChunkMod:createAutocmd()
     BaseMod.createAutocmd(self)
-    local render_cb = function(event, opts)
+    local render_cb = function(event)
         local bufnr = event.buf
-        if not api.nvim_buf_is_valid(bufnr) then
-            return
-        end
         local winid = api.nvim_get_current_win()
         local pos = api.nvim_win_get_cursor(winid)
 
@@ -190,45 +181,40 @@ function ChunkMod:createAutocmd()
             use_treesitter = self.conf.use_treesitter,
         })
         api.nvim_win_call(winid, function()
-            self.meta.shiftwidth = cFunc.get_sw(bufnr)
+            self.meta.shiftwidth = api.nvim_get_option_value("shiftwidth", { buf = bufnr })
             self.meta.leftcol = fn.winsaveview().leftcol
         end)
         if ret_code == CHUNK_RANGE_RET.OK then
-            self:render(range, { error = false, lazy = opts.lazy })
+            self:render(range, { error = false })
         elseif ret_code == CHUNK_RANGE_RET.NO_CHUNK then
             self:clear(Scope(bufnr, 0, api.nvim_buf_line_count(bufnr)))
             self:updatePreState({}, {}, {}, false)
         elseif ret_code == CHUNK_RANGE_RET.CHUNK_ERR then
-            self:render(range, { error = self.conf.error_sign, lazy = opts.lazy })
+            self:render(range, { error = true })
         elseif ret_code == CHUNK_RANGE_RET.NO_TS then
-            self:notify("[hlchunk.chunk]: no parser for " .. vim.bo[bufnr].ft, nil, { once = true })
+            self:notify(
+                "[hlchunk.chunk]: no parser for " .. vim.filetype.match({ buf = event.buf }),
+                nil,
+                { once = true }
+            )
         end
     end
-    local db_render_cb = debounce(render_cb, self.conf.delay, false)
-    local db_render_cb_imm = debounce_throttle(render_cb, self.conf.delay)
-    local db_render_cb_with_pre_hook = function(event, opts)
-        opts = opts or { lazy = false }
+    local debounce_render_cb = debounce(render_cb, self.conf.delay)
+    local debounce_render_cb_with_pre_hook = function(event)
         local bufnr = event.buf
-        if not self:shouldRender(bufnr) then
+        if not (api.nvim_buf_is_valid(bufnr) and self:shouldRender(bufnr)) then
             return
         end
-        if opts.lazy then
-            db_render_cb(event, opts)
-        else
-            db_render_cb_imm(event, opts)
-        end
+        debounce_render_cb(event)
     end
+
     api.nvim_create_autocmd({ "CursorMovedI", "CursorMoved" }, {
         group = self.meta.augroup_name,
-        callback = function(e)
-            db_render_cb_with_pre_hook(e, { lazy = true })
-        end,
+        callback = debounce_render_cb_with_pre_hook,
     })
     api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
         group = self.meta.augroup_name,
-        callback = function(e)
-            db_render_cb_with_pre_hook(e, { lazy = false })
-        end,
+        callback = debounce_render_cb_with_pre_hook,
     })
     api.nvim_create_autocmd({ "UIEnter", "BufWinEnter" }, {
         group = self.meta.augroup_name,

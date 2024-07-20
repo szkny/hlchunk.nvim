@@ -3,16 +3,13 @@ local IndentConf = require("hlchunk.mods.indent.indent_conf")
 local class = require("hlchunk.utils.class")
 local indentHelper = require("hlchunk.utils.indentHelper")
 local Scope = require("hlchunk.utils.scope")
-local Cache = require("hlchunk.utils.cache")
-local throttle = require("hlchunk.utils.timer").debounce_throttle
-local cFunc = require("hlchunk.utils.cFunc")
+local throttle = require("hlchunk.utils.timer").throttle
 
 local api = vim.api
 local fn = vim.fn
 local ROWS_INDENT_RETCODE = indentHelper.ROWS_INDENT_RETCODE
 
 ---@class IndentMetaInfo : MetaInfo
----@field pre_leftcol number
 
 local constructor = function(self, conf, meta)
     local default_meta = {
@@ -21,7 +18,6 @@ local constructor = function(self, conf, meta)
         hl_base_name = "HLIndent",
         ns_id = api.nvim_create_namespace("indent"),
         shiftwidth = fn.shiftwidth(),
-        pre_leftcol = 0,
         leftcol = fn.winsaveview().leftcol,
     }
 
@@ -30,182 +26,103 @@ local constructor = function(self, conf, meta)
     self.conf = IndentConf(conf)
 end
 
----@class RenderInfo
----@field lnum number
----@field virt_text_win_col number
----@field virt_text table
----@field level number
-
 ---@class IndentMod : BaseMod
 ---@field conf IndentConf
 ---@field meta IndentMetaInfo
----@field render fun(self: IndentMod, range: Scope, opts: {lazy: boolean})
----@field calcRenderInfo fun(self: IndentMod, range: Scope): RenderInfo
----@field setmark function
+---@field render fun(self: IndentMod, range: Scope)
+---@field renderLine function
 ---@overload fun(conf?: UserIndentConf, meta?: MetaInfo): IndentMod
 local IndentMod = class(BaseMod, constructor)
 
-local indent_cache = Cache("bufnr", "line")
-local pos2info = Cache("bufnr", "line", "col")
-local pos2id = Cache("bufnr", "line", "col")
-
-function IndentMod:disable()
-    pos2info:clear()
-    pos2id:clear()
-    BaseMod.disable(self)
-end
-
-local function narrowRange(range)
-    local start = range.start
-    local finish = range.finish
-    for i = start, finish do
-        if not indent_cache:has(range.bufnr, i) then
-            start = i
-            break
-        end
-    end
-    for i = finish, start, -1 do
-        if not indent_cache:has(range.bufnr, i) then
-            finish = i
-            break
-        end
-    end
-    return Scope(range.bufnr, start, finish)
-end
-
-function IndentMod:calcRenderInfo(range)
-    local conf = self.conf
-    local meta = self.meta
-    local char_num = #conf.chars
-    local style_num = #meta.hl_name_list
-    local leftcol = meta.leftcol
-    local sw = meta.shiftwidth
-    local render_info = {}
-    for lnum = range.start, range.finish do
-        local blankLen = indent_cache:get(range.bufnr, lnum) --[[@as string]]
-        local render_char_num, offset, shadow_char_num = indentHelper.calc(blankLen, leftcol, sw)
-        for i = 1, render_char_num do
-            local win_col = offset + (i - 1) * sw
-            local char = conf.chars[(i - 1 + shadow_char_num) % char_num + 1]
-            local style = meta.hl_name_list[(i - 1 + shadow_char_num) % style_num + 1]
-            table.insert(render_info, {
-                lnum = lnum,
-                virt_text_win_col = win_col,
-                virt_text = { { char, style } },
-                level = i,
-            })
-        end
-    end
-
-    return render_info
-end
-
-function IndentMod:setmark(bufnr, render_info)
-    -- render
+function IndentMod:renderLine(bufnr, index, blankLen)
     local row_opts = {
         virt_text_pos = "overlay",
         hl_mode = "combine",
         priority = self.conf.priority,
     }
-    for _, v in pairs(render_info) do
-        row_opts.virt_text = v.virt_text
-        row_opts.virt_text_win_col = v.virt_text_win_col
-        if not pos2id:get(bufnr, v.lnum, v.virt_text_win_col) then
-            local id = api.nvim_buf_set_extmark(bufnr, self.meta.ns_id, v.lnum, 0, row_opts)
-            pos2id:set(bufnr, v.lnum, v.virt_text_win_col, id)
-        end
+    local render_char_num, offset, shadow_char_num =
+        indentHelper.calc(blankLen, self.meta.leftcol, self.meta.shiftwidth)
+
+    for i = 1, render_char_num do
+        local char = self.conf.chars[(i - 1 + shadow_char_num) % #self.conf.chars + 1]
+        local style = self.meta.hl_name_list[(i - 1 + shadow_char_num) % #self.meta.hl_name_list + 1]
+        row_opts.virt_text = { { char, style } }
+        row_opts.virt_text_win_col = offset + (i - 1) * self.meta.shiftwidth
+
+        -- when use treesitter, without this judge, when paste code will over render
+        -- if row_opts.virt_text_win_col < 0 or row_opts.virt_text_win_col >= fn.indent(index) then
+        --     vim.notify(tostring(index))
+        --     -- if the len of the line is 0, and have leftcol, we should draw it indent by context
+        --     if api.nvim_buf_get_lines(bufnr, index - 1, index, false)[1] ~= "" then
+        --         return
+        --     end
+        -- end
+        api.nvim_buf_set_extmark(bufnr, self.meta.ns_id, index - 1, 0, row_opts)
     end
 end
 
-function IndentMod:render(range, opts)
-    opts = opts or { lazy = false }
-    local bufnr = range.bufnr
-    local conf = self.conf
-
-    if not opts.lazy then
-        self:clear(range)
-        for i = range.start, range.finish do
-            indent_cache:clear(bufnr, i)
-            pos2id:clear(bufnr, i)
-            pos2info:clear(bufnr, i)
-        end
+function IndentMod:render(range)
+    if not self:shouldRender(range.bufnr) then
+        return
     end
+    self:clear(range)
 
-    local narrowed_range = narrowRange(range)
-    local retcode, rows_indent = indentHelper.get_rows_indent(narrowed_range, {
-        use_treesitter = conf.use_treesitter,
+    local retcode, rows_indent = indentHelper.get_rows_indent(range, {
+        use_treesitter = self.conf.use_treesitter,
         virt_indent = true,
     })
-    if retcode == ROWS_INDENT_RETCODE.NO_TS and conf.use_treesitter then
-        if conf.notify then
+    if retcode == ROWS_INDENT_RETCODE.NO_TS and self.conf.use_treesitter then
+        if self.conf.notify then
             self:notify("[hlchunk.indent]: no parser for " .. vim.bo.filetype, nil, { once = true })
         end
         return
     end
 
-    -- get render_info and process it
-    for lnum, indent in pairs(rows_indent) do
-        indent_cache:set(bufnr, lnum, indent)
+    for index, _ in pairs(rows_indent) do
+        self:renderLine(range.bufnr, index, rows_indent[index])
     end
-    local render_info = self:calcRenderInfo(narrowed_range)
-    for _, v in pairs(render_info) do
-        pos2info:set(range.bufnr, v.lnum, v.virt_text_win_col, v.virt_text)
-    end
-    for _, filter in ipairs(self.conf.filter_list) do
-        render_info = vim.tbl_filter(filter, render_info)
-    end
-
-    -- render
-    self:setmark(bufnr, render_info)
 end
 
 function IndentMod:createAutocmd()
     BaseMod.createAutocmd(self)
-    local render_cb = function(event, opts)
-        opts = opts or { lazy = false }
-        local bufnr = event.buf
-        if not self:shouldRender(bufnr) then
-            return
-        end
-        local wins = fn.win_findbuf(bufnr) or {}
-        for _, winid in ipairs(wins) do
-            local win_bufnr = api.nvim_win_get_buf(winid)
-            local range = Scope(win_bufnr, fn.line("w0", winid) - 1, fn.line("w$", winid) - 1)
-            local ahead_lines = self.conf.ahead_lines
-            range.start = math.max(0, range.start - ahead_lines)
-            range.finish = math.min(api.nvim_buf_line_count(win_bufnr) - 1, range.finish + ahead_lines)
-            api.nvim_win_call(winid, function()
-                self.meta.shiftwidth = cFunc.get_sw(win_bufnr)
-                self.meta.pre_leftcol = self.meta.leftcol
-                self.meta.leftcol = fn.winsaveview().leftcol
-                if self.meta.pre_leftcol ~= self.meta.leftcol then
-                    opts.lazy = false
-                end
-                self:render(range, opts)
-            end)
-        end
-    end
-    local throttle_render_cb = throttle(render_cb, self.conf.delay)
-    local throttle_render_cb_with_pre_hook = function(event, opts)
-        opts = opts or { lazy = false }
+    local render_cb = function(event)
         local bufnr = event.buf
         if not (api.nvim_buf_is_valid(bufnr) and self:shouldRender(bufnr)) then
             return
         end
-        throttle_render_cb(event, opts)
+        local wins = fn.win_findbuf(bufnr) or {}
+        for _, winid in ipairs(wins) do
+            local range = Scope(api.nvim_win_get_buf(winid), fn.line("w0", winid) - 1, fn.line("w$", winid) - 1)
+            local ahead_lines = self.conf.ahead_lines
+            range.start = math.max(0, range.start - ahead_lines)
+            range.finish = math.min(api.nvim_buf_line_count(bufnr) - 1, range.finish + ahead_lines)
+            api.nvim_win_call(winid, function()
+                self.meta.shiftwidth = api.nvim_get_option_value("shiftwidth", { buf = bufnr })
+                self.meta.leftcol = fn.winsaveview().leftcol
+                self:render(range)
+            end)
+        end
+    end
+    local throttle_render_cb = throttle(render_cb, self.conf.delay)
+    local throttle_render_cb_with_pre_hook = function(event)
+        local bufnr = event.buf
+        if not (api.nvim_buf_is_valid(bufnr) and self:shouldRender(bufnr)) then
+            return
+        end
+        throttle_render_cb(event)
     end
 
     api.nvim_create_autocmd({ "WinScrolled" }, {
         group = self.meta.augroup_name,
-        callback = function(e)
-            throttle_render_cb_with_pre_hook(e, { lazy = true })
-        end,
+        callback = throttle_render_cb_with_pre_hook,
     })
-    api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWinEnter" }, {
+    api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
         group = self.meta.augroup_name,
-        callback = function(e)
-            throttle_render_cb_with_pre_hook(e, { lazy = false })
-        end,
+        callback = throttle_render_cb_with_pre_hook,
+    })
+    api.nvim_create_autocmd({ "BufWinEnter" }, {
+        group = self.meta.augroup_name,
+        callback = throttle_render_cb_with_pre_hook,
     })
     api.nvim_create_autocmd({ "OptionSet" }, {
         group = self.meta.augroup_name,

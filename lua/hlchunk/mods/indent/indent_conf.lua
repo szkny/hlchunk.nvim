@@ -12,7 +12,6 @@ local BaseConf = require("hlchunk.mods.base_mod.base_conf")
 ---@field chars table<string, string>
 ---@field ahead_lines number
 ---@field delay number default 50ms
----@field filter_list table<number, function>
 ---@overload fun(conf?: UserIndentConf): IndentConf
 local IndentConf = class(BaseConf, function(self, conf)
     local default_conf = {
@@ -22,7 +21,6 @@ local IndentConf = class(BaseConf, function(self, conf)
         chars = { "│" },
         ahead_lines = 5,
         delay = 100,
-        filter_list = {},
     }
     conf = vim.tbl_deep_extend("force", default_conf, conf or {}) --[[@as IndentConf]]
     BaseConf.init(self, conf)
@@ -33,7 +31,6 @@ local IndentConf = class(BaseConf, function(self, conf)
     self.chars = conf.chars
     self.ahead_lines = conf.ahead_lines
     self.delay = conf.delay
-    self.filter_list = conf.filter_list
 end)
 
 return IndentConf

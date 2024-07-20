@@ -1,16 +1,18 @@
-local cFunc = require("hlchunk.utils.cFunc")
+local fn = vim.fn
 
 -- get the virtual indent of the given line
----@param bufnr number
----@param lnum number 0-indexed
+---@param rows_indent table<number, number>
+---@param line number
 ---@return number
-local function get_virt_indent(bufnr, lnum)
-    local line_cnt = vim.api.nvim_buf_line_count(bufnr)
-    for i = lnum + 1, line_cnt do
-        local line = cFunc.get_line(bufnr, i)
-        if cFunc.skipwhite(line) ~= "" then
-            return cFunc.get_indent(bufnr, i)
+local function get_virt_indent(rows_indent, line)
+    local cur = line + 1
+    while rows_indent[cur] do
+        if rows_indent[cur] == 0 then
+            break
+        elseif rows_indent[cur] > 0 then
+            return rows_indent[cur]
         end
+        cur = cur + 1
     end
     return -1
 end
@@ -23,7 +25,6 @@ local indentHelper = {}
 ---@return number render_num, number offset, number shadowed_num return the render char number and the start index of the
 -- first render char, the last is shadowed char number
 function indentHelper.calc(blank, leftcol, sw)
-    blank = blank or ""
     local blankLen = type(blank) == "string" and #blank or blank --[[@as number]]
     if blankLen - leftcol <= 0 or sw <= 0 then
         return 0, 0, 0
@@ -40,45 +41,52 @@ indentHelper.ROWS_INDENT_RETCODE = {
     NO_TS = 1,
 }
 
----@param range Scope
----@return ROWS_INDENT_RETCODE
----@return table<number, number>
-local function get_rows_indent_by_context(range)
-    local rows_indent = {}
-    local bufnr = range.bufnr
+---@param bufnr number
+---@param row number 0-index
+function indentHelper.get_indent(bufnr, row)
+    return vim.api.nvim_buf_call(bufnr, function()
+        return fn.indent(row + 1)
+    end)
+end
 
-    for i = range.finish, range.start, -1 do
-        rows_indent[i] = cFunc.get_indent(bufnr, i)
-        if rows_indent[i] == 0 and cFunc.get_line_len(bufnr, i) == 0 then
-            rows_indent[i] = get_virt_indent(bufnr, i)
+local function get_rows_indent_by_context(range)
+    local begRow = range.start + 1
+    local endRow = range.finish + 1
+
+    local rows_indent = {}
+
+    for i = endRow, begRow, -1 do
+        rows_indent[i] = indentHelper.get_indent(range.bufnr, i - 1)
+        if rows_indent[i] == 0 and #fn.getline(i) == 0 then
+            rows_indent[i] = get_virt_indent(rows_indent, i) or -1
         end
     end
 
     return indentHelper.ROWS_INDENT_RETCODE.OK, rows_indent
 end
 
----@param range Scope
----@return ROWS_INDENT_RETCODE
----@return table<number, number>
 local function get_rows_indent_by_treesitter(range)
+    local begRow = range.start + 1
+    local endRow = range.finish + 1
+
     local rows_indent = {}
     local ts_indent_status, ts_indent = pcall(require, "nvim-treesitter.indent")
     if not ts_indent_status then
         return indentHelper.ROWS_INDENT_RETCODE.NO_TS, {}
     end
 
-    local bufnr = range.bufnr
-    for i = range.start, range.finish, 1 do
-        local t1 = vim.api.nvim_buf_call(bufnr, function()
-            return ts_indent.get_indent(i + 1)
+    for i = endRow, begRow, -1 do
+        rows_indent[i] = vim.api.nvim_buf_call(range.bufnr, function()
+            local indent = ts_indent.get_indent(i)
+            if indent == -1 then
+                indent = fn.indent(i)
+                if indent == 0 and #fn.getline(i) == 0 then
+                    indent = get_virt_indent(rows_indent, i) or -1
+                end
+            end
+            ---@diagnostic disable-next-line: redundant-return-value
+            return indent
         end)
-        local t2 = cFunc.get_indent(bufnr, i)
-        local line_len = cFunc.get_line_len(bufnr, i)
-        local indent = math.min(t1, t2)
-        if indent == 0 and line_len == 0 then
-            indent = get_virt_indent(bufnr, i)
-        end
-        rows_indent[i] = indent
     end
 
     return indentHelper.ROWS_INDENT_RETCODE.OK, rows_indent

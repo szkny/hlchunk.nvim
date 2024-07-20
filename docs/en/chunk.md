@@ -28,14 +28,14 @@ local default_conf = {
     error_sign = true,
     -- animation related
     duration = 200,
-    delay = 300,
+    delay = 500,
 }
 ```
 
 The unique configuration options are `use_treesitter`, `chars`, `textobject`, `max_file_size`,  `error_sign`, `duration` and `delay`
 
 - `use_treesitter` is used to control whether to use treesitter to highlight code blocks. The default is true.
-  If this field is set to true, it finds the matching node type by searching the tree nodes from bottom to top to obtain the corresponding chunk range. If set to false, it will use Vim's `searchpair` to find the nearest braces to infer the position (which is why it cannot be used normally in scripting languages like Python). And after `v1.2.1`, it's no longer recommended to use `treesitter` to get indent.
+  If this field is set to true, it finds the matching node type by searching the tree nodes from bottom to top to obtain the corresponding chunk range. If set to false, it will use Vim's `searchpair` to find the nearest braces to infer the position (which is why it cannot be used normally in scripting languages like Python).
 
 - `chars` is a table, where the characters in it are used to render the chunk. This table contains five parts:
 
@@ -60,7 +60,7 @@ The unique configuration options are `use_treesitter`, `chars`, `textobject`, `m
 
 - `duration` is a number, with a default of `200` ms. It is used to control the duration of the animation.
 
-- `delay` is a number, with a default of `300` ms. It is used to control the delay of the animation. If set to `0`, animation will be removed.
+- `delay` is a number, with a default of `500` ms. It is used to control the delay of the animation. If set to `0`, animation will be removed.
 
 For the general configurations (mentioned in the [README](../../README.md)), only a few need special attention:
 
